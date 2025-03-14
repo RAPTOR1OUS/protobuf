@@ -6028,6 +6028,16 @@ const FileDescriptor* DescriptorBuilder::BuildFile(
   PlanAllocationSize(proto, *alloc);
   alloc->FinalizePlanning(tables_);
   FileDescriptor* result = BuildFileImpl(proto, *alloc);
+  if (had_errors_) {
+    std::string protostr;
+    FileDescriptorProto proto_copy = proto;
+    proto_copy.clear_source_code_info();
+    TextFormat::Printer printer;
+    printer.SetExpandAny(true);
+    printer.SetHideUnknownFields(false);
+    printer.PrintToString(proto_copy, &protostr);
+    ABSL_LOG(ERROR) << "had error: \n" << protostr;
+  }
 
   file_tables_->FinalizeTables();
   if (result) {
@@ -10235,6 +10245,41 @@ bool IsStringFieldWithPrivatizedAccessors(const FieldDescriptor& field) {
   }
 
   return false;
+}
+
+// Returns whether a field should be serialized with length-delimited encoding.
+bool ShouldUseLengthDelimitedEncoding(const FieldDescriptor* field) {
+  static const auto* allowlist_files = new absl::flat_hash_set<std::string>{
+      "java/com/google/devtools/javascript/jstrimmer/chunk_spec.proto",
+      "java/com/google/devtools/javascript/jstrimmer/summary.proto",
+      // TODO: Bootstrapping is hard, and affects every language.
+      "net/proto2/proto/descriptor.proto",
+      "google/protobuf/descriptor.proto",
+      "google/protobuf/plugin.proto",
+      "third_party/protobuf/compiler/plugin.proto",
+      "net/proto2/compiler/java/internal/metadata.proto",
+      "net/proto2/compiler/proto/profile.proto",
+      // These protos hit java code size limits with delimited encoding support.
+      "indexing/docjoiner/proto/data-version.proto",
+      "privacy/ptoken/common/proto/ptoken_attributes.proto",
+      // These protos embed raw bytes and are particularly sensitive to golden
+      // tests.
+      "shopping/data_governance/clients/data_governance_token.proto",
+      "privacy/ptoken/public/core/ptoken_overlay.proto",
+      // No clue why these are broken, TF might be doing something weird, but
+      // SR's build depends on it.
+      "third_party/tensorflow/compiler/tf2xla/tf2xla.proto",
+  };
+  if (absl::StartsWith(field->file()->name(), "third_party/tink/proto/")) {
+    // Tink has custom serialization/parsing logic that is very sensitive to
+    // changes in the wire format.
+    return true;
+  } else if (absl::StartsWith(field->file()->name(),
+                              "third_party/tensorflow/core/framework/")) {
+    // Same issue with TF's build.
+    return true;
+  }
+  return allowlist_files->contains(field->file()->name());
 }
 
 }  // namespace cpp
